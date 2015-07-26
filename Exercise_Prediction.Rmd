@@ -1,0 +1,133 @@
+---
+title: "Exercise Prediction Using Accelerometer Data"
+author: "dgreene80"
+date: "July 26, 2015"
+output: html_document
+---
+```{r message=FALSE, collapse=TRUE, echo=FALSE, warning=FALSE}
+library(datasets)
+data(mtcars)
+cars<-mtcars
+mtcars$am <- factor(mtcars$am, labels = c("automatic", "manual")) 
+```
+**Excutive summary**
+
+This report examines data published by Groupware @ LES, which includes accelerometer data recorded during weightlifting exercises. The authors attached accelerometers to participants who then performed barbell lifts, and this report uses machine learning algorithms to classify exercise behavior using data collected from those accelerometers. In this report, I build and compare two machine learning models, and I confirm the Random Forests model provides good predictive accuracy. I then use the Random Forests model to evaluate and submit the provided testing dataset.
+
+**Data Processing**
+
+More information about the original data can be found here:
+
+- http://groupware.les.inf.puc-rio.br/har
+- http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf
+
+The data used for this analysis can be found here:
+
+- https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+- https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+```{r echo=FALSE, message=FALSE}
+set.seed(1)
+library(doParallel)
+cl <- makeCluster(4)
+registerDoParallel(cl)
+```
+
+Here I download the project data and load it into R.
+```{r message=FALSE, collapse=TRUE}
+library(corrplot)
+library(lattice)
+library(ggplot2)
+library(e1071)
+library(rpart)
+library(randomForest)
+library(caret)
+training_df <- read.csv(file="pml-training.csv")
+testing_df  <- read.csv(file="pml-testing.csv")
+dim(training_df)
+dim(testing_df)
+```
+
+The data includes 160 variables, so there are too many to display in this report, but I performed some exploratory data analysis and found many variables contain NA values. Here I exclude variables that have mostly NA values. I also exclude variables that have near-zero-variability because those variables provide little or no predictive power. I also exclude identification variables and time-related variables, and I based my decision on this discussion in the course forum: https://class.coursera.org/predmachlearn-030/forum/thread?thread_id=61
+```{r collapse=TRUE}
+#Keep only columns that have fewer than half NA values (19622/2 = 9811)
+majority_non_NA <- colSums(is.na(training_df)) < 9811
+training_df <- training_df[, majority_non_NA] 
+testing_df <- testing_df[, majority_non_NA] 
+
+#Exclude columns with near-zero-variance
+near_zero <- nearZeroVar(training_df)
+training_df <- training_df[, -near_zero]
+testing_df <- testing_df[, -near_zero]
+
+#Exclude identification and time-related columns
+training_df <- training_df[, -c(1:7)]
+testing_df <- testing_df[, -c(1:7)]
+
+dim(training_df)
+dim(testing_df)
+```
+
+**Split Data for Cross Validation**
+
+Here I partition the data into training and testing sets in order to peform cross validation, which will allow me to estimate out-of-sample errors.
+```{r collapse=TRUE}
+#Partition the data and allocate 70% for training and 30% for testing
+inTrain <- createDataPartition(y = training_df$classe, p=0.7, list=FALSE)
+training <- training_df[inTrain,]
+testing <- training_df[-inTrain,]
+```
+
+**Build a Machine Learning Algorithm**
+
+Here I use the caret package train() function to build and compare two models, one using a Tree-based model (rpart), and one using a Random Forests model. I train the models using the training dataset, and I will use the testing dataset to peform cross validation in a later step. I expect the Random Forests model will provide greater prediction accuracy because the lecture said it was one of the most accurate models. For the Random Forests model, I specified 5 folds in order to obtain acceptable accuracy with minimal processing time.
+```{r collapse=TRUE, message=FALSE}
+#Train a model using rpart
+rpart_model <- train(classe ~ ., data=training, method="rpart"); rpart_model
+#Test the Tree-based model using the training dataset, and show in-sample accuracy
+rpart_in_sample_accuracy <- confusionMatrix(predict(rpart_model, training), training$classe)$overall[1]
+rpart_in_sample_accuracy
+#Show in-sample error
+rpart_in_sample_error <- 1 - as.numeric(rpart_in_sample_accuracy); rpart_in_sample_error
+
+#Train a model using random forests
+ctrl <- trainControl(method="cv", number=5, allowParallel=TRUE)
+rf_model <- train(classe ~ ., data=training, method="rf", trControl=ctrl); rf_model
+#Test the Randome Forests model using the training dataset, and show in-sample accuracy
+rf_in_sample_accuracy <- confusionMatrix(predict(rf_model, training), training$classe)$overall[1]
+rf_in_sample_accuracy
+#Show in-sample error
+rf_in_sample_error <- 1 - as.numeric(rf_in_sample_accuracy); rf_in_sample_error
+```
+
+The in-sample accuracy of the Tree-based model is very low, at only 49%, and the in-sample accuracy of the Random Forest model is very high at 100%, giving it a zero in-sample error. I expect the out-of-sample error to be higher for each model, which is confirmed below.
+
+**Estimate Out-of-Sample Errors**
+
+Here I use cross validation on the held-out testing data to test the predictive power of each model, and to estimate the out-of-sample errors.
+```{r collapse=TRUE}
+#Test Tree-based model using cross validation on testing data, and show estimated out-of-sample accuracy
+rpart_out_of_sample_accuracy <- confusionMatrix(predict(rpart_model, testing), testing$classe)$overall[1]
+rpart_out_of_sample_accuracy
+#Show estimated out-of-sample error
+rpart_out_of_sample_error <- 1 - as.numeric(rpart_out_of_sample_accuracy); rpart_out_of_sample_error
+
+#Test Random Forests model using cross validation on testing data, and show estimated out-of-sample accuracy
+rf_out_of_sample_accuracy <- confusionMatrix(predict(rf_model, testing), testing$classe)$overall[1]
+rf_out_of_sample_accuracy
+#Show estimated out-of-sample error
+rf_out_of_sample_error <- 1 - as.numeric(rf_out_of_sample_accuracy); rf_out_of_sample_error
+```
+
+The out-of-sample results are slightly worse for each model, as predicted, and the Random Forests model is vastly superior, so I will use it to predict values in the testing dataset provided for project submission.
+```{r collapse=TRUE}
+predictions <- predict(rf_model, testing_df); predictions
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(as.character(predictions))
+```
